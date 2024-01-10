@@ -1,5 +1,35 @@
 #!/bin/bash
 
+################################################################################
+#                                                                              #
+# alerter.sh                                                                   #
+#                                                                              #
+# version: 1.0.0                                                               #
+#                                                                              #
+# ALERTER - Run Linux as a Honeypot and alert for anomalies.                   #
+#                                                                              #
+# Student Name - Michael Ivlev                                                 #
+# Student Code - S11                                                           #
+# Class Code - HMagen773616                                                    #
+# Lectures Name - Eliran Berkovich                                             #
+#                                                                              #
+# GNU GENERAL PUBLIC LICENSE                                                   #
+#                                                                              #
+# This program is free software: you can redistribute it and/or modify         #
+# it under the terms of the GNU General Public License as published by         #
+# the Free Software Foundation, either version 3 of the License, or            #
+# (at your option) any later version.                                          #
+#                                                                              #
+# This program is distributed in the hope that it will be useful,              #
+# but WITHOUT ANY WARRANTY; without even the implied warranty of               #
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the                #
+# GNU General Public License for more details.                                 #
+#                                                                              #
+# You should have received a copy of the GNU General Public License            #
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.        #
+#                                                                              #
+################################################################################
+
 declare -g SCRIPT_DIR #used for internal files and scripts
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 declare -g USER_DIR #used for files to be easily accessible by the end user
@@ -21,7 +51,6 @@ declare -rg USERNAME="${SUDO_USER:-$USER}"
 declare -A modes_enum
 
 modes_enum=( [SSH]=1 [FTP]=2 [SMB]=3 [ALL]=4 )
-keys=("SSH" "FTP" "SMB" "ALL")
 
 # Check if running as root
 check_root() {
@@ -30,10 +59,6 @@ check_root() {
         return 1
     fi
     return 0
-}
-
-install_progs() {
-    apt-get install rsyslog
 }
 
 welcome_msg() {
@@ -59,10 +84,13 @@ get_user_input() {
 use_ssh=false
 use_ftp=false
 use_smb=false
+# Sets flags for selected services
+# input: $1 - valid user input
+# return: 0 - no errors
 add_choice() {
     opt="$1"
     
-    use_all=false
+    local use_all=false
     [[ "$opt" == *${modes_enum[ALL]}* ]] && use_all=true
     [[ "$opt" == *${modes_enum[SSH]}* ]] || $use_all && { use_ssh=true; modes_str+=" 22(SSH)"; }
     [[ "$opt" == *${modes_enum[FTP]}* ]] || $use_all && { use_ftp=true; modes_str+=" 21(FTP)"; }
@@ -71,23 +99,24 @@ add_choice() {
     return 0
 }
 
+# Parces the users service choice, checks for validity
+# return: 1 - problem with parsing
+#         0 - no errors
 parse_input() {
     while ! get_user_input; do
-        echo "Invalid Input"
+        alert "Invalid Input"
     done
 
     modes_str=""
     add_choice "${choice}" || return 1
 
-    [ -z "$modes_str" ] && echo "Invalid Input" && return 1
+    [ -z "$modes_str" ] && alert "Invalid Input: failed to parse" && return 1
 
     return 0
 }
 
+# When running the Alerter, display in live-mode the Honeypot activity.
 live_feed() {
-    # When running the Alerter, display in live-mode the Honeypot activity.
-    # echo "$(date): $ip accessed SMB [admin:password]"
-    # echo "$(date): $ip accessed SMB [admin:password1]"
     create_file "$all_log" || exit 1
 
     $use_ssh && tail -Fn 0 "$ssh_log" 2>/dev/null | grep --line-buffered --text -w "password for" | tee -a "$all_log" &
@@ -101,6 +130,7 @@ live_feed() {
 
 }
 
+# Log the bad actors access method to the honeypot
 log_activity() {
     echo "staring honeypot logging... this may take a few seconds depending on the amount of services"
     echo "enter exit to stop the logging" 
@@ -113,14 +143,13 @@ log_activity() {
     # pid2=$!
     local rc_file="$SCRIPT_DIR/honeypot_msf.rc"
     echo -n > "$rc_file"
-    $use_ftp && cat "$ftp_msf_template" >> "$rc_file"  #& pids+="$! "; } #TODO switch to rc file
+    $use_ftp && cat "$ftp_msf_template" >> "$rc_file"
     $use_smb && cat "$smb_msf_template" >> "$rc_file"
     local msf_flag=false
     [ -s "$rc_file" ] && { msf_flag=true; msfconsole -r "$rc_file" -q -o "$msf_log" ; } # & pids+="$! "
     # wait $!
 
     while ! $msf_flag; do
-        # read -r -n 1 -t .1 -s && break
         read -rs input
         [ "$input" == "exit" ] && break
     done
@@ -131,6 +160,10 @@ log_activity() {
     [ -n "$pids" ] && kill $pids #$pids2
 }
 
+# create a dir with a given name using the user as the owner
+# input: $1 - dir name
+# return: 1 - cannot create dir / dir exists but inaccessible
+#         0 - created successfuly / dir exists
 create_dir() {
     local dir_name="$1"
     if ! [ -e "$dir_name" ]; then
@@ -142,6 +175,10 @@ create_dir() {
     return 0
 }
 
+# create a file with a given name using the user as the owner
+# input: $1 - file name
+# return: 1 - cannot create file / file exists but inaccessible
+#         0 - created successfuly / file exists
 create_file() {
     local file_name="$1"
     if ! [ -e "$file_name" ]; then
@@ -155,11 +192,8 @@ create_file() {
 
 
 counter_scan() {
-#     Using the log details, use the IP addresses to learn about them. Find their origin
-# country, organization, contact information, open ports, services and save the
-# information.
-    echo "All your base are belong to us ~CATS 1991"
-    
+# Using the log details scan the captured bad actors. Find their origin
+# creates a log with country, organization, open ports etc.    
     local attacker_ips=""
     $use_ssh && attacker_ips+="$(awk '/password for/ {print $(NF-3)}' "$ssh_log" | sort -u)\n"
     $use_ftp && attacker_ips+="$(awk '/\[\+\] FTP LOGIN/ {sub(/:.*/, ""); print $NF}' "$msf_log" | sort -u)\n"
@@ -200,13 +234,12 @@ counter_scan() {
         done <<< "$attacker_ips"
         rm -f "$port_scan"
     fi
+    
+    success "All your base are belong to us ~CATS 1991"
 }
-######################
 
 main() {
     check_root || exit 1
-
-    # install_progs
 
     welcome_msg
 
@@ -214,7 +247,7 @@ main() {
 
     title "Alerter started using${modes_str}"
 
-    # log_activity || exit 1
+    log_activity || exit 1
 
     read -rp "initiate a counter scan? (y/n) " ans
     [ "${ans,,n}" == "y" ] && counter_scan
