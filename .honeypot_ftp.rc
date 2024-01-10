@@ -1,0 +1,5 @@
+# myscript.rc
+
+# FTP Honeypot
+use auxiliary/server/capture/ftp
+exploit -j

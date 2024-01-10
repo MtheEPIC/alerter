@@ -1,0 +1,6 @@
+# myscript.rc
+
+# SMB Honeypot
+use auxiliary/server/capture/smb
+#set JOHNPWFILE smb_hashes
+exploit -j
