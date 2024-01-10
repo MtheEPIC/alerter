@@ -8,10 +8,16 @@ readonly SCRIPT_DIR USER_DIR
 
 source "$SCRIPT_DIR/styled_prints.sh"
 
-declare -rg log_ssh="$USER_DIR/ssh.log"
-declare -rg log_ftp="$USER_DIR/ftp.log"
-declare -rg log_smb="$USER_DIR/smb.log"
-declare -rg msf_log="$USER_DIR/tmp.log"
+declare -rg ssh_log="$USER_DIR/.ssh.log"
+declare -rg ftp_log="$USER_DIR/.ftp.log"
+declare -rg smb_log="$USER_DIR/.smb.log"
+declare -rg msf_log="$USER_DIR/.msf.log"
+declare -rg all_log="$USER_DIR/honeypot.log"
+declare -rg ftp_msf_template="$SCRIPT_DIR/.honeypot_ftp.rc"
+declare -rg smb_msf_template="$SCRIPT_DIR/.honeypot_smb.rc"
+
+# VARS
+declare -rg USERNAME="${SUDO_USER:-$USER}"
 declare -A modes_enum
 
 modes_enum=( [SSH]=1 [FTP]=2 [SMB]=3 [ALL]=4 )
@@ -27,7 +33,7 @@ check_root() {
 }
 
 install_progs() {
-    sudo apt-get install rsyslog
+    apt-get install rsyslog
 }
 
 welcome_msg() {
@@ -47,8 +53,6 @@ get_user_input() {
     [ -z "$choice" ] && return 1
     ! [[ $choice =~ ^[0-9]+$ ]] && return 1
     [ ${#choice} -gt ${#modes_enum[@]} ] && return 1
-    choice=$(rev <<< "${choice}")
-    #TODO sort the input
     return 0
 }
 
@@ -84,52 +88,71 @@ live_feed() {
     # When running the Alerter, display in live-mode the Honeypot activity.
     # echo "$(date): $ip accessed SMB [admin:password]"
     # echo "$(date): $ip accessed SMB [admin:password1]"
+    create_file "$all_log" || exit 1
 
-    $use_ssh && tail -Fn 10 "$log_ssh" | grep --line-buffered --text -w "password for" &
+    $use_ssh && tail -Fn 0 "$ssh_log" 2>/dev/null | grep --line-buffered --text -w "password for" | tee -a "$all_log" &
     
     filter="("
     $use_ftp && filter+="FTP"
     $use_ftp && $use_smb && filter+="|"
     $use_smb && filter+="\[SMB\]"
-    filter+=")"
-    $use_ftp || $use_smb && tail -Fn 10 "$msf_log" | grep --line-buffered --text -w -E "$filter" &
+    filter+=").*"
+    $use_ftp || $use_smb && tail -Fn 0 "$msf_log" 2>/dev/null | grep --line-buffered --text -Eo "$filter" | tee -a "$all_log" &
 
 }
 
 log_activity() {
-    echo "logging..." #| tee -a ssh.log
-    
-    # $use_ssh && tail -Fn 0 /var/log/auth.log | grep -w "password for" 2>> ssh.log &
-    # ./log.sh &
-    # tail -fn 0 /var/log/auth.log | grep --line-buffered "password for" > ssh.log &
-    pids=""
+    echo "staring honeypot logging... this may take a few seconds depending on the amount of services"
+    echo "enter exit to stop the logging" 
+
+    local pids=""
     $use_ssh && systemctl is-active ssh >/dev/null || systemctl start ssh || return 1 \
-    && tail -fn 0 /var/log/auth.log > "$log_ssh" & pids+="$! " #TODO switch to cowrie
-
-    # $use_ssh && tail -fn 0 /var/log/auth.log > "$log_ssh" & #pids+="$! " #TODO switch to cowrie
-    # $use_ftp && tail -fn 0 /var/log/vsftpd.log > "$log_ftp" & #pids+="$! " #TODO switch to rc file
-    # $use_smb && tail -fn 0 /var/log/samba/log.smbd > $log_smb & #pids+="$! " #TODO switch to rc file
-
+    && create_file "$ssh_log" && tail -fn 0 /var/log/auth.log > "$ssh_log" & pids+="$! " #TODO switch to cowrie
 
     live_feed &
     # pid2=$!
-
-    rc_file="tmp.rc"
-    echo -n > $rc_file
-    $use_ftp && cat honeypot_ftp.rc >> $rc_file  #& pids+="$! "; } #TODO switch to rc file
-    $use_smb && cat honeypot_smb.rc >> $rc_file
-    [ -s "$rc_file" ] && msfconsole -r $rc_file -q -o "$msf_log" # & pids+="$! "
+    local rc_file="$SCRIPT_DIR/honeypot_msf.rc"
+    echo -n > "$rc_file"
+    $use_ftp && cat "$ftp_msf_template" >> "$rc_file"  #& pids+="$! "; } #TODO switch to rc file
+    $use_smb && cat "$smb_msf_template" >> "$rc_file"
+    local msf_flag=false
+    [ -s "$rc_file" ] && { msf_flag=true; msfconsole -r "$rc_file" -q -o "$msf_log" ; } # & pids+="$! "
     # wait $!
 
-    while true; do
-        read -r -n 1 -t .1 -s && break
+    while ! $msf_flag; do
+        # read -r -n 1 -t .1 -s && break
+        read -rs input
+        [ "$input" == "exit" ] && break
     done
     
     # echo $pids
     # $use_ftp || $use_smb && pkill -f msfconsole
+    # shellcheck disable=SC2086
     [ -n "$pids" ] && kill $pids #$pids2
-    # The information of the users trying to access, and their input, should be saved into a log.
 }
+
+create_dir() {
+    local dir_name="$1"
+    if ! [ -e "$dir_name" ]; then
+        su "$USERNAME" -c "mkdir $dir_name"
+    elif ! [ -d "$dir_name" ] || ! [ -w "$dir_name" ]; then
+        alert "ERROR: $dir_name already exist but not as a writable directory"
+        return 1
+    fi
+    return 0
+}
+
+create_file() {
+    local file_name="$1"
+    if ! [ -e "$file_name" ]; then
+        su "$USERNAME" -c "touch $file_name"
+    elif ! [ -f "$file_name" ] || ! [ -w "$file_name" ]; then
+        alert "ERROR: $file_name already exist but not as a writable file"
+        return 1
+    fi
+    return 0
+}
+
 
 counter_scan() {
 #     Using the log details, use the IP addresses to learn about them. Find their origin
@@ -137,41 +160,43 @@ counter_scan() {
 # information.
     echo "All your base are belong to us ~CATS 1991"
     
-    attacker_ips=""
-    $use_ssh && attacker_ips+="$(awk '/password for/ {print $(NF-3)}' "$log_ssh" | sort -u)\n"
+    local attacker_ips=""
+    $use_ssh && attacker_ips+="$(awk '/password for/ {print $(NF-3)}' "$ssh_log" | sort -u)\n"
     $use_ftp && attacker_ips+="$(awk '/\[\+\] FTP LOGIN/ {sub(/:.*/, ""); print $NF}' "$msf_log" | sort -u)\n"
     $use_smb && attacker_ips+="$(awk '/\[SMB\] NTLMv2-SSP Client/ {print $NF}' "$msf_log" | sort -u)\n"
     attacker_ips=$(echo -e "$attacker_ips" | sort -u | sed '/^$/d')
 
     if [ -n "$attacker_ips" ]; then
-        port_scan="$SCRIPT_DIR/open_ports.txt"
+        local port_scan="$SCRIPT_DIR/open_ports.txt"
         while read -r ip; do
-            scan_dir="$USER_DIR/scans-$ip"
-            
-            # [ -e path ] && [ -d path ] && [ -w path ] && echo "Continue" \
-            # || ([ -e path ] && [ -d path ] && echo "Error: Directory exists, but it's not writable") \
-            # || ([ -e path ] && echo "Error: File or Directory exists, but it's not a writable directory") \
-            # || (mkdir path && echo "Directory created")
+            local scan_dir="$USER_DIR/scans-$ip"
+            local location="$scan_dir/location"
+            local whois="$scan_dir/whois"
+            local dig="$scan_dir/dig"
+            local ports_txt="$scan_dir/nmap_$ip.txt"
+            local ports_xml="$scan_dir/nmap_$ip.xml"
+            local ports_html="$scan_dir/nmap_$ip.html"
 
-            if ! [ -e "$scan_dir" ]; then
-                mkdir "$scan_dir"
-            elif ! [ -d "$scan_dir" ] || ! [ -w "$scan_dir" ]; then
-                alert "ERROR: $scan_dir already exist but not as a writable directory"
-                continue
-            fi
+            create_dir "$scan_dir" || continue
 
+            create_file "$location" || continue
             # geoiplookup "$ip" > "$scan_dir/location"
-            curl -s "https://ipinfo.io/$ip/json" > "$scan_dir/location"
-            if ! grep -oq "\"bogon\"" "$scan_dir/location"; then
-                whois "$ip" > "$scan_dir/whois"
-                dig "$ip" > "$scan_dir/dig"
+            curl -s "https://ipinfo.io/$ip/json" > "$location"
+            if grep -oq "\"country\"" "$location"; then
+                create_file "$whois" || continue
+                whois "$ip" > "$whois"
+                create_file "$dig" || continue
+                dig "$ip" > "$dig"
             fi
             
+            create_file "$ports_txt" || continue
+            create_file "$ports_xml" || continue
+            create_file "$ports_html" || continue
             # masscan -p 0-65535 "$ip" --rate=10000 -oL "$scan_dir"/scan.txt
             nmap -p- -oN "$port_scan" "$ip"
             ports=$(grep "^[0-9]" "$port_scan" | cut -d '/' -f 1 | tr '\n' ',' | sed 's/,$//')
-            nmap -p"$ports" -A -oN "$scan_dir/nmap_$ip.txt" -oX "$scan_dir/nmap_$ip.xml"
-            xsltproc "$scan_dir/nmap_$ip.xml" -o "$scan_dir/nmap_$ip.html"
+            nmap -p"$ports" -A -oN "$ports_txt" -oX "$ports_xml" "$ip"
+            xsltproc "$ports_xml" -o "$ports_html"
         done <<< "$attacker_ips"
         rm -f "$port_scan"
     fi
@@ -189,10 +214,9 @@ main() {
 
     title "Alerter started using${modes_str}"
 
-    # log_activity #&
-    # log_pid=$!
+    # log_activity || exit 1
 
-    read -rp "should a counter scan be initiated? (y/n) " ans
+    read -rp "initiate a counter scan? (y/n) " ans
     [ "${ans,,n}" == "y" ] && counter_scan
 
     success "done"
