@@ -52,6 +52,15 @@ declare -A modes_enum
 
 modes_enum=( [SSH]=1 [FTP]=2 [SMB]=3 [ALL]=4 )
 
+# Checks if all prerequisites are met, root privileges and package dependencies
+# return: 0 - all are met
+#         1 - some aren't met
+check_prerequisites() {
+    check_root || return 1
+    bash $SCRIPT_DIR/installer.sh -d # >/dev/null)
+    return $?
+}
+
 # Check if running as root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -81,14 +90,14 @@ get_user_input() {
     return 0
 }
 
-use_ssh=false
-use_ftp=false
-use_smb=false
+declare -g use_ssh=false
+declare -g use_ftp=false
+declare -g use_smb=false
 # Sets flags for selected services
 # input: $1 - valid user input
 # return: 0 - no errors
 add_choice() {
-    opt="$1"
+    local opt="$1"
     
     local use_all=false
     [[ "$opt" == *${modes_enum[ALL]}* ]] && use_all=true
@@ -107,7 +116,7 @@ parse_input() {
         alert "Invalid Input"
     done
 
-    modes_str=""
+    declare -g modes_str=""
     add_choice "${choice}" || return 1
 
     [ -z "$modes_str" ] && alert "Invalid Input: failed to parse" && return 1
@@ -191,9 +200,9 @@ create_file() {
 }
 
 
-counter_scan() {
 # Using the log details scan the captured bad actors. Find their origin
 # creates a log with country, organization, open ports etc.    
+counter_scan() {
     local attacker_ips=""
     $use_ssh && attacker_ips+="$(awk '/password for/ {print $(NF-3)}' "$ssh_log" | sort -u)\n"
     $use_ftp && attacker_ips+="$(awk '/\[\+\] FTP LOGIN/ {sub(/:.*/, ""); print $NF}' "$msf_log" | sort -u)\n"
@@ -239,7 +248,7 @@ counter_scan() {
 }
 
 main() {
-    check_root || exit 1
+    check_prerequisites || exit 1
 
     welcome_msg
 
