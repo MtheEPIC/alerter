@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-source $SCRIPT_DIR/styled_prints.sh
+source "$SCRIPT_DIR/styled_prints.sh"
 apps=( "rsyslog" "nmap" "metasploit-framework" "xsltproc") 
 
 
@@ -14,13 +14,16 @@ check_root() {
 }
 
 run_installer() {   
+    check_apps && return 0
     check_root || return 1
     apt update || return 1
+    # shellcheck disable=SC2048,SC2086 # whitespace and word spliting is desired
     apt install -y ${apps[*]} || return 1
     return 0
 }
 
 check_apps() {
+    # shellcheck disable=SC2048,SC2086 # whitespace and word spliting is desired
     if ! dpkg-query -W -f='${Status}' ${apps[*]} &>/dev/null; then
         alert "missing some apps"; return 1
     fi
