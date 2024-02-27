@@ -1,4 +1,4 @@
-# VULNER
+# ALERTER
 
 ###  A script that will make Linux run as a Honeypot and alert for anomalies.
 
@@ -20,7 +20,7 @@ Developers assume no liability and are not responsible for any misuse or damage 
 - Generate report in a text and web format.
 
 # Installation 
-Instructions on how to install *VULNER*
+Instructions on how to install *ALERTER*
 ```bash
 git clone https://github.com/MtheEPIC/alerter.git
 cd alerter
